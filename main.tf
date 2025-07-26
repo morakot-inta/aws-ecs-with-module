@@ -5,23 +5,20 @@ provider "aws" {
 data "aws_availability_zones" "available" {}
 
 locals {
-  region = "ap-southeast-1"
-  name   = "ex-${basename(path.cwd)}"
+  company          = "midecode"
+  region           = "ap-southeast-1"
+  project_name     = "ionos"
+  ecs_cluster_name = "${local.company}-${local.project_name}"
+  alb_name         = "${local.company}-${local.project_name}"
+  vpc_name         = "${local.company}-${local.project_name}"
 
   vpc_cidr = "10.0.0.0/16"
   azs      = slice(data.aws_availability_zones.available.names, 0, 3)
 
-  service1_name = "ecs-demo-frontend"
-  service1_container_name = "ecsdemo-frontend"
-  service1_container_port = 80 
-
-  service2_container_name = "ecsdemo-frontend"
-  service2_container_port = 80 
-
-  tags = {
-    Name       = local.name
-    Example    = local.name
-    Repository = "https://github.com/terraform-aws-modules/terraform-aws-ecs"
+  common_tags = {
+    environment = "poc"
+    owner       = "midecode"
+    project     = local.project_name
   }
 }
 
@@ -32,128 +29,34 @@ locals {
 module "ecs_cluster" {
   source = "./modules/cluster"
 
-  name = local.name
+  name = local.ecs_cluster_name
 
   # Capacity provider
   default_capacity_provider_strategy = {
     FARGATE = {
-      weight = 50
-      base   = 20
-    }
-    FARGATE_SPOT = {
-      weight = 50
+      weight = 100
+      # base   = 20
     }
   }
 
-  tags = local.tags
+  tags = merge(local.common_tags, {})
 }
-
-################################################################################
-# Service
-################################################################################
-
-module "ecs_service" {
-  source = "./modules/service"
-
-  name        = local.name
-  cluster_arn = module.ecs_cluster.arn
-
-  cpu    = 1024
-  memory = 4096
-
-  # Enables ECS Exec
-  enable_execute_command = true
-
-  # Container definition(s)
-  container_definitions = {
-
-
-    (local.service1_container_name) = {
-      cpu       = 512
-      memory    = 1024
-      essential = true
-      image     = "nginx:latest"
-      portMappings = [
-        {
-          name          = local.service1_container_name
-          containerPort = local.service1_container_port
-          hostPort      = local.service1_container_port
-          protocol      = "tcp"
-        }
-      ]
-
-      # Example image used requires access to write to root filesystem
-      readonlyRootFilesystem = false
-
-      memoryReservation = 100
-    }
-  }
-
-  service_connect_configuration = {
-    namespace = aws_service_discovery_http_namespace.this.arn
-    service = [
-      {
-        client_alias = {
-          port     = local.service1_container_port
-          dns_name = local.service1_container_name
-        }
-        port_name      = local.service1_container_name
-        discovery_name = local.service1_container_name
-      }
-    ]
-  }
-
-  load_balancer = {
-    service = {
-      target_group_arn = module.alb.target_groups[local.service1_name].arn
-      container_name   = local.service1_container_name
-      container_port   = local.service1_container_port
-    }
-  }
-
-  subnet_ids = module.vpc.private_subnets
-  security_group_ingress_rules = {
-    alb_3000 = {
-      description                  = "Service port"
-      from_port                    = local.service1_container_port
-      ip_protocol                  = "tcp"
-      referenced_security_group_id = module.alb.security_group_id
-    }
-  }
-  security_group_egress_rules = {
-    all = {
-      ip_protocol = "-1"
-      cidr_ipv4   = "0.0.0.0/0"
-    }
-  }
-
-  service_tags = {
-    "ServiceTag" = "Tag on service level"
-  }
-
-  tags = local.tags
-
-  depends_on = [
-    module.alb
-  ]
-}
-
 
 ################################################################################
 # Supporting Resources
 ################################################################################
 
 resource "aws_service_discovery_http_namespace" "this" {
-  name        = local.name
-  description = "CloudMap namespace for ${local.name}"
-  tags        = local.tags
+  name        = local.project_name
+  description = "CloudMap namespace for ${local.project_name}"
+  tags        = merge(local.common_tags, {})
 }
 
 module "alb" {
   source  = "terraform-aws-modules/alb/aws"
   version = "~> 9.0"
 
-  name = local.name
+  name = local.alb_name
 
   load_balancer_type = "application"
 
@@ -164,10 +67,17 @@ module "alb" {
   enable_deletion_protection = false
 
   # Security Group
+  security_group_name = "${local.alb_name}-alb-sg"
   security_group_ingress_rules = {
-    all_http = {
+    http = {
       from_port   = 80
       to_port     = 80
+      ip_protocol = "tcp"
+      cidr_ipv4   = "0.0.0.0/0"
+    }
+    https = {
+      from_port   = 443
+      to_port     = 443
       ip_protocol = "tcp"
       cidr_ipv4   = "0.0.0.0/0"
     }
@@ -192,23 +102,43 @@ module "alb" {
       }
 
       rules = {
-        example_com_rule = {
-          priority = 100
-          
-          conditions = [
-            {
-              host_header = {
-                values = ["nginx.midecode.com"]
-              }
-            }
-          ]
+        (local.service1_name) = {
+          priority   = 101
+          conditions = [{ host_header = { values = ["nginx1.midecode.com"] } }]
+          actions    = [{ type = "forward", target_group_key = "${local.service1_name}" }]
+        }
 
-          actions = [
-            {
-              type             = "forward"
-              target_group_key = "${local.service1_name}" 
-            }
-          ]
+        (local.service2_name) = {
+          priority   = 102
+          conditions = [{ host_header = { values = ["nginx2.midecode.com"] } }]
+          actions    = [{ type = "forward", target_group_key = "${local.service2_name}" }]
+        }
+      }
+    }
+
+    https = {
+      port            = 443
+      protocol        = "HTTPS"
+      ssl_policy      = "ELBSecurityPolicy-2016-08"
+      certificate_arn = "arn:aws:acm:ap-southeast-1:058264383156:certificate/15f45bf6-77d2-47a7-b24e-a7b154c04e26"
+
+      # Default action for requests that don't match any rules
+      fixed_response = {
+        content_type = "text/plain"
+        message_body = "ALB: No matching rule found"
+        status_code  = "404"
+      }
+
+      rules = {
+        (local.service1_name) = {
+          priority   = 101
+          conditions = [{ host_header = { values = ["nginx1.midecode.com"] } }]
+          actions    = [{ type = "forward", target_group_key = "${local.service1_name}" }]
+        }
+        (local.service2_name) = {
+          priority   = 102
+          conditions = [{ host_header = { values = ["nginx2.midecode.com"] } }]
+          actions    = [{ type = "forward", target_group_key = "${local.service2_name}" }]
         }
       }
     }
@@ -234,6 +164,28 @@ module "alb" {
         unhealthy_threshold = 2
       }
 
+      create_attachment = false
+    }
+
+    (local.service2_name) = {
+      backend_protocol                  = "HTTP"
+      backend_port                      = local.service2_container_port
+      target_type                       = "ip"
+      deregistration_delay              = 5
+      load_balancing_cross_zone_enabled = true
+
+      health_check = {
+        enabled             = true
+        healthy_threshold   = 5
+        interval            = 30
+        matcher             = "200"
+        path                = "/"
+        port                = "traffic-port"
+        protocol            = "HTTP"
+        timeout             = 5
+        unhealthy_threshold = 2
+      }
+
       # There's nothing to attach here in this definition. Instead,
       # ECS will attach the IPs of the tasks to this target group
       create_attachment = false
@@ -241,14 +193,16 @@ module "alb" {
 
   }
 
-  tags = local.tags
+  tags = merge(local.common_tags, {
+    Name = local.alb_name
+  })
 }
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 6.0"
 
-  name = local.name
+  name = local.vpc_name
   cidr = local.vpc_cidr
 
   azs             = local.azs
@@ -258,6 +212,8 @@ module "vpc" {
   enable_nat_gateway = true
   single_nat_gateway = true
 
-  tags = local.tags
+  tags = merge(local.common_tags, {
+    Name = local.vpc_name
+  })
 }
 
