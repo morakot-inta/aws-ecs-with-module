@@ -99,12 +99,11 @@ module "ecs_service" {
       ip_protocol                  = "tcp"
       referenced_security_group_id = module.alb.security_group_id
     }
-    ecs_service_connect = {
+    service2 = {
       description                  = "Service Connect port"
-      from_port                    = 0
-      to_port                      = 0 
+      from_port                    = local.service1_container_port 
       ip_protocol                  = "tcp"
-      referenced_security_group_id = module.ecs_service.security_group_id
+      referenced_security_group_id = module.ecs_service2.security_group_id
     }
   }
   security_group_egress_rules = {

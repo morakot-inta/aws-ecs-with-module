@@ -1,5 +1,5 @@
 **/.terraform
-modules
+# modules
 **/terraform-aws-ecs
 **/*.tfstate
 **/*.tfstate.backup

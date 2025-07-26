@@ -97,6 +97,12 @@ module "ecs_service2" {
       ip_protocol                  = "tcp"
       referenced_security_group_id = module.alb.security_group_id
     }
+    service1 = {
+      description                  = "Allow traffic from service1"
+      from_port                    = local.service2_container_port
+      ip_protocol                  = "tcp"
+      referenced_security_group_id = module.ecs_service.security_group_id
+    }
   }
   security_group_egress_rules = {
     all = {
