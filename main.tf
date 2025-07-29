@@ -10,6 +10,7 @@ locals {
   project_name     = "ionos"
   ecs_cluster_name = "${local.company}-${local.project_name}"
   alb_name         = "${local.company}-${local.project_name}"
+  nlb_name         = "${local.company}-${local.project_name}-nlb"
   vpc_name         = "${local.company}-${local.project_name}"
 
   vpc_cidr = "10.0.0.0/16"
@@ -51,6 +52,10 @@ resource "aws_service_discovery_http_namespace" "this" {
   description = "CloudMap namespace for ${local.project_name}"
   tags        = merge(local.common_tags, {})
 }
+
+################################################################################
+# Application Load Balancer 
+################################################################################
 
 module "alb" {
   source  = "terraform-aws-modules/alb/aws"
@@ -191,6 +196,78 @@ module "alb" {
       create_attachment = false
     }
 
+  }
+
+  tags = merge(local.common_tags, {
+    Name = local.alb_name
+  })
+}
+
+################################################################################
+# Network Load Balancer 
+################################################################################
+
+module "nlb" {
+  source  = "terraform-aws-modules/alb/aws"
+  version = "~> 9.0"
+
+  name = local.nlb_name
+
+  load_balancer_type = "network"
+  internal           = true
+
+  vpc_id  = module.vpc.vpc_id
+  subnets = module.vpc.private_subnets
+
+  # For example only
+  enable_deletion_protection = false
+
+  # Security Group
+  security_group_name = "${local.alb_name}-nlb-sg"
+  security_group_ingress_rules = {
+    http = {
+      from_port   = 80
+      to_port     = 80
+      ip_protocol = "tcp"
+      cidr_ipv4   = "0.0.0.0/0"
+    }
+  }
+  security_group_egress_rules = {
+    all = {
+      ip_protocol = "-1"
+      cidr_ipv4   = module.vpc.vpc_cidr_block
+    }
+  }
+
+  listeners = {
+    (local.service3_name) = {
+      port     = 8081
+      protocol = "TCP"
+      forward = {
+        target_group_key = local.service3_name
+      }
+    }
+  }
+
+  target_groups = {
+    (local.service3_name) = {
+      backend_protocol = "TCP"
+      protocol         = "TCP"
+      backend_port     = local.service3_container_port
+      target_type      = "ip"
+
+      health_check = {
+        enabled             = true
+        healthy_threshold   = 5
+        interval            = 30
+        port                = "traffic-port"
+        protocol            = "TCP"
+        timeout             = 5
+        unhealthy_threshold = 2
+      }
+
+      create_attachment = false
+    }
   }
 
   tags = merge(local.common_tags, {
